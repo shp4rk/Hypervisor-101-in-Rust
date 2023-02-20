@@ -57,7 +57,8 @@ impl TestVm for Bochs {
             };
             let bxrc = format!("./bochs/{}_{cpu_type}.bxrc", env::consts::OS);
             let output = Command::new(bochs)
-                .args(["-q", "-unlock", "-rc", DBG_CMD, "-f", &bxrc])
+                .args(["-q", "-unlock", "-f", &bxrc])
+                // .args(["-q", "-unlock", "-rc", DBG_CMD, "-f", &bxrc])
                 .current_dir(Path::new("./tests"))
                 .stdout(Stdio::piped())
                 .spawn()

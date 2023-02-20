@@ -40,7 +40,7 @@ use x86::{
     segmentation::{
         BuildDescriptor, Descriptor, DescriptorBuilder, GateDescriptorBuilder, SegmentSelector,
     },
-    vmx::vmcs,
+    vmx::vmcs::{self, control::SecondaryControls}, msr::IA32_VMX_BASIC,
 };
 
 /// VMX-specific data to represent a guest.
@@ -68,7 +68,7 @@ impl hardware_vt::HardwareVt for Vmx {
         // "Before system software can enter VMX operation, it enables VMX by
         //  setting CR4.VMXE[bit 13] = 1."
         // See: 24.7 ENABLING AND ENTERING VMX OPERATION
-        todo!("E#1-1");
+        cr4_write(cr4() | Cr4::CR4_ENABLE_VMX);
         // Instruction: Enable VMX by setting the VMXE bit in CR4.
         // Hint: cr4(), cr4_write(), Cr4::CR4_ENABLE_VMX
 
@@ -104,11 +104,12 @@ impl hardware_vt::HardwareVt for Vmx {
         // "Software can discover the VMCS revision identifier that a processor
         //  uses by reading the VMX capability MSR IA32_VMX_BASIC (see Appendix A.1)."
         // See: 25.2 FORMAT OF THE VMCS REGION
-        todo!("E#1-2");
         // Instruction: Set the revision ID in the VMXON region and execute the
         //              VMXON instruction.
         // Hint: rdmsr(), x86::msr::IA32_VMX_BASIC,
         //       self.vmxon_region and vmxon()
+        self.vmxon_region.revision_id = rdmsr(IA32_VMX_BASIC) as u32;
+        vmxon(self.vmxon_region.as_mut());
     }
 
     /// Configures VMX. We intercept #BP, #UD, #PF, enable VMX-preemption timer
@@ -140,7 +141,7 @@ impl hardware_vt::HardwareVt for Vmx {
         //  software should execute VMCLEAR on a VMCS region before making the
         //  corresponding VMCS active with VMPTRLD for the first time."
         // See: 25.11.3 Initializing a VMCS
-        todo!("E#2-1");
+        vmclear(&mut self.vmcs_region);
         // Instruction: "Clear" the VMCS with the VMCLEAR instruction
         // Hint: vmclear(), self.vmcs_region
 
@@ -153,10 +154,11 @@ impl hardware_vt::HardwareVt for Vmx {
         //  VMCS region whose VMCS revision identifier differs from that used by
         //  the processor."
         // See: 25.2 FORMAT OF THE VMCS REGION
-        todo!("E#2-2");
         // Instruction: Make the VMCS "active" and "current" with the VMPTRLD
         //              instruction.
         // Hint: vmptrld(), self.vmcs_region
+        self.vmcs_region.revision_id = self.vmxon_region.revision_id;
+        vmptrld(&mut self.vmcs_region);
 
         // The processor now has an associated VMCS (called a "current VMCS") and
         // is able to execute the VMREAD and VMWRITE instructions. Let us program
@@ -175,9 +177,11 @@ impl hardware_vt::HardwareVt for Vmx {
         sidt(&mut idtr);
         vmwrite(vmcs::host::CS_SELECTOR, self.host_gdt.cs.bits());
         vmwrite(vmcs::host::TR_SELECTOR, self.host_gdt.tr.bits());
-        todo!("E#2-3");
         // Instruction: Initialize host CR0, CR3, CR4 fields with current values.
         // Hint: vmcs::host::CR*, cr*(), vmwrite()
+        vmwrite(vmcs::host::CR0, cr0().bits() as u64);
+        vmwrite(vmcs::host::CR3, cr3());
+        vmwrite(vmcs::host::CR4, cr4().bits() as u64);
         vmwrite(vmcs::host::TR_BASE, self.host_gdt.tss.0.as_ptr() as u64);
         vmwrite(vmcs::host::GDTR_BASE, self.host_gdt.gdtr.base as u64);
         vmwrite(vmcs::host::IDTR_BASE, idtr.base as u64);
@@ -237,7 +241,7 @@ impl hardware_vt::HardwareVt for Vmx {
         //   for accessing to any of EPT paging-structures. This is most efficient.
         // See: 29.2.2 EPT Translation Mechanism
         // See: 29.2.6.1 Memory Type Used for Accessing EPT Paging Structures
-        warn!("E#4-1");
+        // warn!("E#4-1");
         // Instruction: (1) Enable EPT and (2) write a EPT pointer value to point to
         //              base address of the EPT (EPT PML4).
         // Hint: (1) IA32_VMX_PROCBASED_CTLS2_ENABLE_EPT_FLAG
@@ -245,7 +249,16 @@ impl hardware_vt::HardwareVt for Vmx {
         //           EPT_POINTER_PAGE_WALK_LENGTH_4, EPT_POINTER_MEMORY_TYPE_WRITE_BACK
         vmwrite(
             vmcs::control::SECONDARY_PROCBASED_EXEC_CONTROLS,
-            adjust_vmx_control(VmxControl::ProcessorBased2, 0),
+            adjust_vmx_control(VmxControl::ProcessorBased2,
+                IA32_VMX_PROCBASED_CTLS2_ENABLE_EPT_FLAG,
+            ),
+        );
+
+        vmwrite(
+            vmcs::control::EPTP_FULL,
+            nested_pml4_addr |
+            EPT_POINTER_PAGE_WALK_LENGTH_4 |
+            EPT_POINTER_MEMORY_TYPE_WRITE_BACK,
         );
 
         // Intercept #BP, #UD, #PF.
@@ -253,6 +266,10 @@ impl hardware_vt::HardwareVt for Vmx {
         warn!("E#7-1");
         // Instruction: Intercept #UD happens in a guest using event intercept
         // Hint: vmwrite(), vmcs::control::EXCEPTION_BITMAP, irq::INVALID_OPCODE_VECTOR
+        vmwrite(
+            vmcs::control::EXCEPTION_BITMAP,
+            (1u8 << irq::INVALID_OPCODE_VECTOR),
+        );
 
         warn!("E#8-1");
         // Instruction: Intercept #BP on the top of #UD
@@ -306,9 +323,15 @@ impl hardware_vt::HardwareVt for Vmx {
         vmwrite(vmcs::guest::IA32_SYSENTER_CS, registers.sysenter_cs);
         vmwrite(vmcs::guest::IA32_SYSENTER_ESP, registers.sysenter_esp);
         vmwrite(vmcs::guest::IA32_SYSENTER_EIP, registers.sysenter_eip);
-        todo!("E#3-1");
         // Instruction: Configure guest IA32_EFER, CR0, CR3, CR4, RIP, RSP and RLAGS
         //              fields with values in the snapshot.
+        vmwrite(vmcs::guest::IA32_EFER_FULL, registers.efer);
+        vmwrite(vmcs::guest::CR0, registers.cr0);
+        vmwrite(vmcs::guest::CR3, registers.cr3);
+        vmwrite(vmcs::guest::CR4, registers.cr4);
+        vmwrite(vmcs::guest::RIP, registers.rip);
+        vmwrite(vmcs::guest::RSP, registers.rsp);
+        vmwrite(vmcs::guest::RFLAGS, registers.rflags);
         vmwrite(vmcs::guest::LINK_PTR_FULL, u64::MAX);
 
         // Set VMX-preemption timer counter if the processor supports it. Convert
@@ -325,9 +348,23 @@ impl hardware_vt::HardwareVt for Vmx {
 
         // Some registers are not managed by VMCS and needed to be manually saved
         // and loaded by software. General purpose registers are such examples.
-        todo!("E#3-2");
         // Instruction: Initialize the `self.registers` using values in the
         //              snapshot.
+        self.registers.rax = snapshot.registers.rax;
+        self.registers.rbx = snapshot.registers.rbx;
+        self.registers.rcx = snapshot.registers.rcx;
+        self.registers.rdx = snapshot.registers.rdx;
+        self.registers.rdi = snapshot.registers.rdi;
+        self.registers.rsi = snapshot.registers.rsi;
+        self.registers.rbp = snapshot.registers.rbp;
+        self.registers.r8 = snapshot.registers.r8;
+        self.registers.r9 = snapshot.registers.r9;
+        self.registers.r10 = snapshot.registers.r10;
+        self.registers.r11 = snapshot.registers.r11;
+        self.registers.r12 = snapshot.registers.r12;
+        self.registers.r13 = snapshot.registers.r13;
+        self.registers.r14 = snapshot.registers.r14;
+        self.registers.r15 = snapshot.registers.r15;
     }
 
     /// Updates the guest states to have the guest use input data.

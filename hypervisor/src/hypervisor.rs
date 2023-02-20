@@ -189,9 +189,9 @@ fn handle_nested_page_fault(
     // by one VM would be visible from other VMs. We enforces this restriction
     // via copy-on-write mechanism (see below).
     if qualification.missing_translation {
-        todo!("E#5-1");
+        // todo!("E#5-1");
         // Instruction: Uncomment and complete implementation of it.
-        //vm.build_translation(gpa, pa);
+        vm.build_translation(gpa, pa);
     }
 
     // If this is a write memory access, trigger copy-on-write. That is, with
@@ -200,13 +200,15 @@ fn handle_nested_page_fault(
     // Then, copy current contents of memory at `pa` to the new dirty page. This
     // effectively isolate the effect of memory write into this current guest.
     // Failure of copy-on-write warrants aborting the VM.
-    warn!("E#6-2");
     // Instruction: Enable copy-on-write semantic by
     //              1. updating nested translation for `gpa` to use separate
     //                 dirty pages, then
     //              2. copying current contents of the PA that maps `gpa` into
     //                 the dirty page selected
     // Use: qualification.write_access, vm.copy_on_write()
+    if qualification.write_access {
+        vm.copy_on_write(gpa, pa);
+    } 
 
     // Since we changed nested paging structure entries, cache invalidation may be
     // required.
